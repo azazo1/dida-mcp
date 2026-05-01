@@ -8,6 +8,8 @@ inbound_bearer_token = ""
 
 [remote]
 url = "https://mcp.dida365.com"
+bearer_mode = "fixed"
+incoming_bearer_header = "Authorization"
 bearer_token = ""
 
 [tools]

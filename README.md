@@ -45,6 +45,7 @@ cp config.toml.example config.toml
 ```toml
 [remote]
 url = "https://mcp.dida365.com"
+bearer_mode = "fixed"
 bearer_token = "your-dida-mcp-bearer-token"
 ```
 
@@ -124,6 +125,8 @@ inbound_bearer_token = ""
 
 [remote]
 url = "https://mcp.dida365.com"
+bearer_mode = "fixed"
+incoming_bearer_header = "Authorization"
 bearer_token = ""
 
 [tools]
@@ -140,9 +143,293 @@ default_timezone = "Asia/Shanghai"
 - `server.stateful_mode`: 是否启用有状态会话模式. 为 `true` 时, 更适合标准 MCP 客户端.
 - `server.inbound_bearer_token`: 本地服务的入站 Bearer token. 留空表示不校验.
 - `remote.url`: 远端 MCP 服务地址. 默认是 `https://mcp.dida365.com`.
-- `remote.bearer_token`: 远端 Dida MCP 的 Bearer token. 不要带 `Bearer ` 前缀.
+- `remote.bearer_mode`: 远端 Bearer 的处理模式.
+- `remote.incoming_bearer_header`: 透传模式下, 从哪个入站请求头读取 Bearer token.
+- `remote.bearer_token`: 固定模式或回退模式使用的远端 Bearer token. 不要带 `Bearer ` 前缀.
 - `tools.enable_get_current_time`: 是否启用本地时间工具.
 - `tools.default_timezone`: `get_current_time` 的默认时区.
+
+### 2 个 Bearer token 的区别
+
+这个服务里可能同时出现 2 类 Bearer token. 它们不是一回事:
+
+1. 本地入站 Bearer token
+   作用: 保护你自己的中转服务, 防止别人直接调用 `http://127.0.0.1:8787/mcp`.
+   配置项: `server.inbound_bearer_token`
+   方向: `MCP 客户端 -> dida-mcp`
+
+2. 远端出站 Bearer token
+   作用: 让 dida-mcp 去调用远端 `https://mcp.dida365.com`.
+   配置项: `remote.bearer_mode`, `remote.incoming_bearer_header`, `remote.bearer_token`
+   方向: `dida-mcp -> mcp.dida365.com`
+
+可以把它理解成:
+
+- `server.inbound_bearer_token` 是“谁能调用我这个中转服务”.
+- `remote.*` 是“我调用远端 Dida MCP 时, 应该带哪个 token”.
+
+一个常见误区是:
+
+- `server.inbound_bearer_token` 不会自动变成远端 token.
+- 只有在 `remote.bearer_mode = "passthrough"` 或 `remote.bearer_mode = "passthrough_or_fixed"` 时, dida-mcp 才会从入站请求头里取 token 再转发给远端.
+
+### Bearer 模式总览
+
+下面这张表可以先帮助你建立直觉:
+
+| 场景 | bearer_mode | 本地校验用哪个配置 | 远端最终带哪个 Bearer |
+| --- | --- | --- | --- |
+| 只想固定用 1 个远端 token | `fixed` | `server.inbound_bearer_token` 可空 | `remote.bearer_token` |
+| 想把客户端传进来的 token 原样转发 | `passthrough` | `server.inbound_bearer_token` 可空 | `remote.incoming_bearer_header` 对应请求头里的 token |
+| 想优先透传, 没传时再走固定 token | `passthrough_or_fixed` | `server.inbound_bearer_token` 可空 | 先读入站请求头, 没有再用 `remote.bearer_token` |
+| 远端不需要认证 | `none` | `server.inbound_bearer_token` 可空 | 不发送 `Authorization` |
+
+### 各种远端 auth 模式
+
+`remote.bearer_mode` 支持下面几种模式:
+
+- `fixed`: 固定使用 `remote.bearer_token`.
+- `passthrough`: 从入站请求头透传 Bearer token.
+- `passthrough_or_fixed`: 优先透传, 透传缺失时回退到 `remote.bearer_token`.
+- `none`: 不发送 `Authorization` 请求头.
+
+#### 模式 1. `fixed`
+
+适用场景:
+
+- 你已经有一个固定的 Dida MCP token.
+- 所有客户端都共用同一个远端身份.
+
+配置示例:
+
+```toml
+[server]
+inbound_bearer_token = ""
+
+[remote]
+url = "https://mcp.dida365.com"
+bearer_mode = "fixed"
+bearer_token = "your-dida-mcp-bearer-token"
+```
+
+客户端请求示例:
+
+```text
+POST /mcp
+Authorization: Bearer anything-or-empty
+```
+
+远端实际收到:
+
+```text
+Authorization: Bearer your-dida-mcp-bearer-token
+```
+
+说明:
+
+- 客户端传什么 `Authorization`, 不影响远端.
+- 远端永远使用 `remote.bearer_token`.
+
+#### 模式 2. `passthrough`
+
+适用场景:
+
+- 每个客户端都有自己的远端 Dida MCP token.
+- 你希望中转服务不要保存固定远端 token.
+
+最简单的配置示例:
+
+```toml
+[server]
+inbound_bearer_token = ""
+
+[remote]
+url = "https://mcp.dida365.com"
+bearer_mode = "passthrough"
+incoming_bearer_header = "Authorization"
+```
+
+客户端请求示例:
+
+```text
+POST /mcp
+Authorization: Bearer client-remote-token
+```
+
+远端实际收到:
+
+```text
+Authorization: Bearer client-remote-token
+```
+
+说明:
+
+- dida-mcp 会读取 `incoming_bearer_header` 指定的请求头.
+- 然后把其中的 Bearer token 原样转发给远端.
+
+#### 模式 2 的重要辨析
+
+如果你同时配置了:
+
+```toml
+[server]
+inbound_bearer_token = "local-gateway-token"
+
+[remote]
+bearer_mode = "passthrough"
+incoming_bearer_header = "Authorization"
+```
+
+那么会发生:
+
+- 客户端发给 dida-mcp 的 `Authorization` 会先用于本地校验.
+- 同一个 `Authorization` 也会继续被拿去转发到远端.
+
+也就是说, 这种写法等价于“本地校验 token 和远端 token 是同一个值”.
+
+只有当你的本地校验 token 和远端 Dida token 本来就是同一个值时, 这种配置才合理.
+
+#### 模式 2. 推荐的双 token 写法
+
+如果你希望“本地校验 token” 和 “远端透传 token” 是两个不同值, 推荐这样配:
+
+```toml
+[server]
+inbound_bearer_token = "local-gateway-token"
+
+[remote]
+url = "https://mcp.dida365.com"
+bearer_mode = "passthrough"
+incoming_bearer_header = "X-Remote-Authorization"
+```
+
+此时:
+
+- 客户端访问本地中转服务时, `Authorization` 用于本地鉴权.
+- 客户端额外传 `X-Remote-Authorization: Bearer <remote-token>`, 用于远端透传.
+
+客户端请求示例:
+
+```text
+POST /mcp
+Authorization: Bearer local-gateway-token
+X-Remote-Authorization: Bearer client-remote-token
+```
+
+远端实际收到:
+
+```text
+Authorization: Bearer client-remote-token
+```
+
+#### 模式 3. `passthrough_or_fixed`
+
+适用场景:
+
+- 大多数时候想用固定远端 token.
+- 但偶尔允许某些客户端临时覆盖成自己的远端 token.
+
+配置示例:
+
+```toml
+[server]
+inbound_bearer_token = "local-gateway-token"
+
+[remote]
+url = "https://mcp.dida365.com"
+bearer_mode = "passthrough_or_fixed"
+incoming_bearer_header = "X-Remote-Authorization"
+bearer_token = "default-remote-token"
+```
+
+情况 A. 客户端没有传 `X-Remote-Authorization`
+
+客户端请求:
+
+```text
+POST /mcp
+Authorization: Bearer local-gateway-token
+```
+
+远端实际收到:
+
+```text
+Authorization: Bearer default-remote-token
+```
+
+情况 B. 客户端传了 `X-Remote-Authorization`
+
+客户端请求:
+
+```text
+POST /mcp
+Authorization: Bearer local-gateway-token
+X-Remote-Authorization: Bearer override-remote-token
+```
+
+远端实际收到:
+
+```text
+Authorization: Bearer override-remote-token
+```
+
+#### 模式 4. `none`
+
+适用场景:
+
+- 远端服务本身不需要 `Authorization`.
+- 或者你当前在接另一个不需要 Bearer 的 MCP 端点做测试.
+
+配置示例:
+
+```toml
+[server]
+inbound_bearer_token = "local-gateway-token"
+
+[remote]
+url = "https://mcp.dida365.com"
+bearer_mode = "none"
+bearer_token = ""
+```
+
+客户端请求:
+
+```text
+POST /mcp
+Authorization: Bearer local-gateway-token
+```
+
+远端实际收到:
+
+```text
+# 不会发送 Authorization 请求头
+```
+
+### 推荐配置
+
+如果你只是自己本地用, 最不容易出错的是固定模式:
+
+```toml
+[server]
+inbound_bearer_token = ""
+
+[remote]
+url = "https://mcp.dida365.com"
+bearer_mode = "fixed"
+bearer_token = "your-dida-mcp-bearer-token"
+```
+
+如果你要把本地网关 token 和远端 Dida token 分开, 推荐:
+
+```toml
+[server]
+inbound_bearer_token = "local-gateway-token"
+
+[remote]
+url = "https://mcp.dida365.com"
+bearer_mode = "passthrough"
+incoming_bearer_header = "X-Remote-Authorization"
+```
 
 ## create_task 和 update_task 的输入风格
 
@@ -167,7 +454,7 @@ default_timezone = "Asia/Shanghai"
 ### 编译检查
 
 ```bash
-RUSTC_WRAPPER= cargo check
+cargo check
 ```
 
 ### 代码结构
@@ -180,7 +467,8 @@ RUSTC_WRAPPER= cargo check
 
 ## 注意事项
 
-- `remote.bearer_token` 不能为空, 否则服务启动时会直接报错.
+- 当 `remote.bearer_mode = "fixed"` 时, `remote.bearer_token` 不能为空.
+- 透传模式下, 指定的入站请求头必须满足 `Bearer <token>` 格式.
 - `server.base_path` 必须以 `/` 开头.
 - `tools.default_timezone` 需要是合法的 IANA 时区名, 例如 `Asia/Shanghai`.
 - `disable_host_validation = true` 更适合本地开发. 如果你要公开部署, 建议进一步收紧 Host / Origin 校验策略.

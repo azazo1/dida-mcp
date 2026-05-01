@@ -50,7 +50,23 @@ pub struct ServerConfig {
 pub struct RemoteConfig {
     /// 远端 MCP 服务地址. 默认可指向 `https://mcp.dida365.com`.
     pub url: String,
-    /// 访问远端 MCP 服务时使用的 Bearer token. 配置值本身不要包含 `Bearer ` 前缀.
+    /// 远端 Bearer 的发送模式.
+    ///
+    /// 可选值:
+    /// - `fixed`: 固定使用 `bearer_token`.
+    /// - `passthrough`: 从入站请求头透传 Bearer token.
+    /// - `passthrough_or_fixed`: 优先透传, 透传缺失时回退到 `bearer_token`.
+    /// - `none`: 不发送 `Authorization` 请求头.
+    #[serde(default = "default_remote_bearer_mode")]
+    pub bearer_mode: RemoteBearerMode,
+    /// 在透传模式下, 从哪个入站 HTTP 请求头读取 Bearer token.
+    ///
+    /// 默认值是 `Authorization`.
+    /// 如果你既要保护本地中转服务, 又要把远端 token 独立透传, 可以改成例如 `X-Remote-Authorization`.
+    #[serde(default = "default_incoming_bearer_header")]
+    pub incoming_bearer_header: String,
+    /// 固定模式或回退模式下使用的 Bearer token. 配置值本身不要包含 `Bearer ` 前缀.
+    #[serde(default)]
     pub bearer_token: String,
 }
 
@@ -62,6 +78,16 @@ pub struct ToolConfig {
     pub enable_get_current_time: bool,
     /// `get_current_time` 默认使用的 IANA 时区名称, 例如 `Asia/Shanghai`. 留空时回退到 `UTC`.
     pub default_timezone: Option<String>,
+}
+
+/// 远端 Bearer token 的处理模式.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteBearerMode {
+    Fixed,
+    Passthrough,
+    PassthroughOrFixed,
+    None,
 }
 
 impl Default for ServerConfig {
@@ -83,6 +109,12 @@ impl Default for ToolConfig {
             enable_get_current_time: default_enable_get_current_time(),
             default_timezone: None,
         }
+    }
+}
+
+impl Default for RemoteBearerMode {
+    fn default() -> Self {
+        default_remote_bearer_mode()
     }
 }
 
@@ -109,8 +141,14 @@ pub fn validate_config(config: &AppConfig) -> Result<()> {
         bail!("remote.url cannot be empty");
     }
 
-    if config.remote.bearer_token.trim().is_empty() {
-        bail!("remote.bearer_token cannot be empty");
+    if config.remote.incoming_bearer_header.trim().is_empty() {
+        bail!("remote.incoming_bearer_header cannot be empty");
+    }
+
+    if config.remote.bearer_mode == RemoteBearerMode::Fixed
+        && config.remote.bearer_token.trim().is_empty()
+    {
+        bail!("remote.bearer_token cannot be empty when remote.bearer_mode = `fixed`");
     }
 
     if let Some(timezone) = config.tools.default_timezone.as_deref() {
@@ -151,4 +189,12 @@ fn default_sse_keep_alive_secs() -> u64 {
 
 fn default_enable_get_current_time() -> bool {
     true
+}
+
+fn default_remote_bearer_mode() -> RemoteBearerMode {
+    RemoteBearerMode::Fixed
+}
+
+fn default_incoming_bearer_header() -> String {
+    "Authorization".to_owned()
 }

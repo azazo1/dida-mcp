@@ -2,19 +2,24 @@ pub mod types;
 
 use std::sync::Arc;
 
+use axum::http::request::Parts;
 use chrono::{Offset, Utc};
 use chrono_tz::Tz;
 use rmcp::{
     Json as McpJson, ServerHandler, ServiceExt,
     handler::server::wrapper::Parameters,
     model::{CallToolRequestParams, CallToolResult},
+    service::{RequestContext, RoleServer},
     tool, tool_handler, tool_router,
     transport::{
         StreamableHttpClientTransport, streamable_http_client::StreamableHttpClientTransportConfig,
     },
 };
 
-use crate::config::AppConfig;
+use crate::{
+    auth::extract_bearer_token,
+    config::{AppConfig, RemoteBearerMode, normalized_token},
+};
 
 use self::types::{
     CompleteTaskArgs, CreateTaskArgs, CurrentTimeResult, GetCurrentTimeArgs,
@@ -36,13 +41,13 @@ impl DidaProxy {
         &self,
         name: &str,
         arguments: serde_json::Map<String, serde_json::Value>,
+        incoming_bearer_token: Option<&str>,
     ) -> Result<CallToolResult, String> {
         let mut transport_config =
             StreamableHttpClientTransportConfig::with_uri(self.config.remote.url.clone());
 
-        let bearer = self.config.remote.bearer_token.trim();
-        if !bearer.is_empty() {
-            transport_config = transport_config.auth_header(format!("Bearer {bearer}"));
+        if let Some(bearer) = self.resolve_remote_bearer_token(incoming_bearer_token)? {
+            transport_config = transport_config.auth_header(bearer);
         }
 
         let transport = StreamableHttpClientTransport::from_config(transport_config);
@@ -60,6 +65,43 @@ impl DidaProxy {
         Ok(result)
     }
 
+    fn resolve_remote_bearer_token(
+        &self,
+        incoming_bearer_token: Option<&str>,
+    ) -> Result<Option<String>, String> {
+        let configured_bearer = normalized_token(Some(self.config.remote.bearer_token.as_str()));
+
+        match self.config.remote.bearer_mode {
+            RemoteBearerMode::Fixed => configured_bearer
+                .map(str::to_owned)
+                .map(Some)
+                .ok_or_else(|| {
+                    "`remote.bearer_token` is required when `remote.bearer_mode = \"fixed\"`"
+                        .to_owned()
+                }),
+            RemoteBearerMode::Passthrough => incoming_bearer_token
+                .map(str::to_owned)
+                .map(Some)
+                .ok_or_else(|| {
+                    format!(
+                        "missing inbound Bearer token in `{}` for `remote.bearer_mode = \"passthrough\"`",
+                        self.config.remote.incoming_bearer_header
+                    )
+                }),
+            RemoteBearerMode::PassthroughOrFixed => incoming_bearer_token
+                .or(configured_bearer)
+                .map(str::to_owned)
+                .map(Some)
+                .ok_or_else(|| {
+                    format!(
+                        "missing inbound Bearer token in `{}` and `remote.bearer_token` fallback is empty",
+                        self.config.remote.incoming_bearer_header
+                    )
+                }),
+            RemoteBearerMode::None => Ok(None),
+        }
+    }
+
     fn resolve_timezone(&self, requested: Option<&str>) -> Result<Tz, String> {
         if let Some(timezone) = requested {
             return timezone
@@ -75,26 +117,43 @@ impl DidaProxy {
 
         Ok(chrono_tz::UTC)
     }
+
+    fn incoming_bearer_token<'a>(&self, ctx: &'a RequestContext<RoleServer>) -> Option<&'a str> {
+        let parts = ctx.extensions.get::<Parts>()?;
+        extract_bearer_token(
+            &parts.headers,
+            self.config.remote.incoming_bearer_header.as_str(),
+        )
+    }
 }
 
 #[tool_router]
 impl DidaProxy {
     #[tool(description = "List all projects of the current user.")]
-    async fn list_projects(&self) -> Result<CallToolResult, String> {
-        self.call_remote_tool("list_projects", serde_json::Map::new())
-            .await
+    async fn list_projects(
+        &self,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, String> {
+        self.call_remote_tool(
+            "list_projects",
+            serde_json::Map::new(),
+            self.incoming_bearer_token(&ctx),
+        )
+        .await
     }
 
     #[tool(description = "Get project details by project_id.")]
     async fn get_project_by_id(
         &self,
         Parameters(args): Parameters<ProjectIdArgs>,
+        ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, String> {
         self.call_remote_tool(
             "get_project_by_id",
             map_to_object(serde_json::json!({
                 "project_id": args.project_id,
             }))?,
+            self.incoming_bearer_token(&ctx),
         )
         .await
     }
@@ -103,12 +162,14 @@ impl DidaProxy {
     async fn get_project_with_undone_tasks(
         &self,
         Parameters(args): Parameters<ProjectIdArgs>,
+        ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, String> {
         self.call_remote_tool(
             "get_project_with_undone_tasks",
             map_to_object(serde_json::json!({
                 "project_id": args.project_id,
             }))?,
+            self.incoming_bearer_token(&ctx),
         )
         .await
     }
@@ -117,6 +178,7 @@ impl DidaProxy {
     async fn create_task(
         &self,
         Parameters(args): Parameters<CreateTaskArgs>,
+        ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, String> {
         let remote_task = RemoteTaskPayload::from_create(args);
         self.call_remote_tool(
@@ -124,6 +186,7 @@ impl DidaProxy {
             map_to_object(serde_json::json!({
                 "task": remote_task,
             }))?,
+            self.incoming_bearer_token(&ctx),
         )
         .await
     }
@@ -132,6 +195,7 @@ impl DidaProxy {
     async fn update_task(
         &self,
         Parameters(args): Parameters<UpdateTaskArgs>,
+        ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, String> {
         let task_id = args.task_id.clone();
         let remote_task = RemoteTaskPayload::from_update(args);
@@ -141,6 +205,7 @@ impl DidaProxy {
                 "task_id": task_id,
                 "task": remote_task,
             }))?,
+            self.incoming_bearer_token(&ctx),
         )
         .await
     }
@@ -149,12 +214,14 @@ impl DidaProxy {
     async fn get_task_by_id(
         &self,
         Parameters(args): Parameters<TaskIdArgs>,
+        ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, String> {
         self.call_remote_tool(
             "get_task_by_id",
             map_to_object(serde_json::json!({
                 "task_id": args.task_id,
             }))?,
+            self.incoming_bearer_token(&ctx),
         )
         .await
     }
@@ -163,12 +230,14 @@ impl DidaProxy {
     async fn search_task(
         &self,
         Parameters(args): Parameters<SearchTaskArgs>,
+        ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, String> {
         self.call_remote_tool(
             "search_task",
             map_to_object(serde_json::json!({
                 "query": args.query,
             }))?,
+            self.incoming_bearer_token(&ctx),
         )
         .await
     }
@@ -177,6 +246,7 @@ impl DidaProxy {
     async fn list_undone_tasks_by_date(
         &self,
         Parameters(args): Parameters<ListUndoneTasksByDateArgs>,
+        ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, String> {
         let search = RemoteUndoneTaskSearch {
             project_ids: args.project_ids,
@@ -189,6 +259,7 @@ impl DidaProxy {
             map_to_object(serde_json::json!({
                 "search": search,
             }))?,
+            self.incoming_bearer_token(&ctx),
         )
         .await
     }
@@ -197,6 +268,7 @@ impl DidaProxy {
     async fn complete_task(
         &self,
         Parameters(args): Parameters<CompleteTaskArgs>,
+        ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, String> {
         self.call_remote_tool(
             "complete_task",
@@ -204,6 +276,7 @@ impl DidaProxy {
                 "project_id": args.project_id,
                 "task_id": args.task_id,
             }))?,
+            self.incoming_bearer_token(&ctx),
         )
         .await
     }

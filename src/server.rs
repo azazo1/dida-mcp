@@ -18,6 +18,7 @@ use tokio::net::TcpListener;
 use tracing::{info, warn};
 
 use crate::{
+    auth::extract_bearer_token,
     config::{
         AppConfig, ServerConfig, load_config, normalized_token, resolve_config_path,
         validate_config,
@@ -117,16 +118,11 @@ async fn auth_middleware(
     request: Request<axum::body::Body>,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    match extract_bearer_token(&headers) {
+    match extract_bearer_token(&headers, "Authorization") {
         Some(actual) if actual == expected_token.as_str() => Ok(next.run(request).await),
         _ => {
             warn!("rejected request due to missing or invalid inbound bearer token");
             Err(StatusCode::UNAUTHORIZED)
         }
     }
-}
-
-fn extract_bearer_token(headers: &HeaderMap) -> Option<&str> {
-    let header = headers.get("Authorization")?.to_str().ok()?;
-    header.strip_prefix("Bearer ")
 }

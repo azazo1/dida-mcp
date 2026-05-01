@@ -747,12 +747,12 @@ impl ServerHandler for DidaProxy {}
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeSet, env, ops::Deref, sync::Arc};
+    use std::{collections::BTreeSet, env, sync::Arc};
 
     use serde_json::{Value, json};
 
     use crate::{
-        config::{AppConfig, RemoteBearerMode, RemoteConfig, ServerConfig, ToolConfig},
+        config::{AppConfig, RemoteBearerMode, RemoteConfig, ToolConfig},
         proxy::types::map_to_object,
     };
 

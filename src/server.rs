@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{future::pending, net::SocketAddr, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
 use axum::{
@@ -82,8 +82,12 @@ pub async fn run_with_config(config: Arc<AppConfig>) -> Result<()> {
     );
 
     axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
         .await
-        .context("axum server exited unexpectedly")
+        .context("axum server exited unexpectedly")?;
+
+    info!("dida MCP proxy stopped");
+    Ok(())
 }
 
 fn build_mcp_config(server: &ServerConfig) -> StreamableHttpServerConfig {
@@ -103,6 +107,40 @@ fn init_tracing() {
         .unwrap_or_else(|_| "info,rmcp=warn,hyper=warn".into());
 
     tracing_subscriber::fmt().with_env_filter(filter).init();
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        match tokio::signal::ctrl_c().await {
+            Ok(()) => info!("received SIGINT, starting graceful shutdown"),
+            Err(err) => {
+                warn!(error = %err, error_debug = ?err, "failed to listen for SIGINT");
+                pending::<()>().await;
+            }
+        }
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut terminate) => {
+                terminate.recv().await;
+                info!("received SIGTERM, starting graceful shutdown");
+            }
+            Err(err) => {
+                warn!(error = %err, error_debug = ?err, "failed to listen for SIGTERM");
+                pending::<()>().await;
+            }
+        }
+    };
+
+    #[cfg(not(unix))]
+    let terminate = pending::<()>();
+
+    tokio::select! {
+        () = ctrl_c => {},
+        () = terminate => {},
+    }
 }
 
 async fn healthz() -> impl IntoResponse {

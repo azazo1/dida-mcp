@@ -1,6 +1,6 @@
 pub mod types;
 
-use std::sync::Arc;
+use std::{error::Error, sync::Arc};
 
 use axum::http::request::Parts;
 use chrono::{Offset, Utc};
@@ -15,6 +15,7 @@ use rmcp::{
         StreamableHttpClientTransport, streamable_http_client::StreamableHttpClientTransportConfig,
     },
 };
+use tracing::error;
 
 use crate::{
     auth::extract_bearer_token,
@@ -32,6 +33,27 @@ pub struct DidaProxy {
     config: Arc<AppConfig>,
 }
 
+fn format_error_chain(err: &(dyn Error + 'static)) -> String {
+    let mut parts = Vec::new();
+    let mut current = Some(err);
+
+    while let Some(err) = current {
+        let message = err.to_string();
+        let should_push = parts
+            .last()
+            .map(|previous| previous != &message)
+            .unwrap_or(true);
+
+        if should_push {
+            parts.push(message);
+        }
+
+        current = err.source();
+    }
+
+    parts.join(" | caused by: ")
+}
+
 impl DidaProxy {
     pub fn new(config: Arc<AppConfig>) -> Self {
         Self { config }
@@ -43,8 +65,9 @@ impl DidaProxy {
         arguments: serde_json::Map<String, serde_json::Value>,
         incoming_bearer_token: Option<&str>,
     ) -> Result<CallToolResult, String> {
+        let remote_url = self.config.remote.url.clone();
         let mut transport_config =
-            StreamableHttpClientTransportConfig::with_uri(self.config.remote.url.clone());
+            StreamableHttpClientTransportConfig::with_uri(remote_url.clone());
 
         if let Some(bearer) = self.resolve_remote_bearer_token(incoming_bearer_token)? {
             transport_config = transport_config.auth_header(bearer);
@@ -54,14 +77,47 @@ impl DidaProxy {
         let client = ()
             .serve(transport)
             .await
-            .map_err(|err| format!("failed to connect to remote MCP server: {err}"))?;
+            .map_err(|err| {
+                let error_chain = format_error_chain(&err);
+                error!(
+                    remote_url = %remote_url,
+                    error = %err,
+                    error_debug = ?err,
+                    error_chain = %error_chain,
+                    "failed to initialize remote MCP client",
+                );
+                format!(
+                    "failed to connect to remote MCP server `{remote_url}` while sending initialize request: {error_chain}"
+                )
+            })?;
 
         let result = client
             .call_tool(CallToolRequestParams::new(name.to_owned()).with_arguments(arguments))
             .await
-            .map_err(|err| format!("remote tool `{name}` failed: {err}"))?;
+            .map_err(|err| {
+                let error_chain = format_error_chain(&err);
+                error!(
+                    remote_url = %remote_url,
+                    tool_name = %name,
+                    error = %err,
+                    error_debug = ?err,
+                    error_chain = %error_chain,
+                    "remote MCP tool call failed",
+                );
+                format!("remote tool `{name}` failed via `{remote_url}`: {error_chain}")
+            })?;
 
-        let _ = client.cancel().await;
+        if let Err(err) = client.cancel().await {
+            let error_chain = format_error_chain(&err);
+            error!(
+                remote_url = %remote_url,
+                error = %err,
+                error_debug = ?err,
+                error_chain = %error_chain,
+                "failed to cancel remote MCP client session cleanly",
+            );
+        }
+
         Ok(result)
     }
 
@@ -313,3 +369,27 @@ impl DidaProxy {
     instructions = "Task-focused Dida365 MCP proxy. It exposes a small set of task and project tools, forwards them to the configured remote MCP endpoint with bearer authentication, and provides a local get_current_time tool."
 )]
 impl ServerHandler for DidaProxy {}
+
+#[cfg(test)]
+mod tests {
+    use super::format_error_chain;
+
+    #[test]
+    fn format_error_chain_lists_nested_sources() {
+        let err = anyhow::anyhow!("tcp connect failed")
+            .context("reqwest transport error")
+            .context("initialize request failed");
+
+        assert_eq!(
+            format_error_chain(err.as_ref()),
+            "initialize request failed | caused by: reqwest transport error | caused by: tcp connect failed"
+        );
+    }
+
+    #[test]
+    fn format_error_chain_skips_adjacent_duplicates() {
+        let err = anyhow::Error::msg("same message").context("same message");
+
+        assert_eq!(format_error_chain(err.as_ref()), "same message");
+    }
+}

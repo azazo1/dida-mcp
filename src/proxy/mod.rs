@@ -105,6 +105,10 @@ fn collect_project_ids(value: &Value, project_ids: &mut BTreeSet<String>) {
     }
 }
 
+fn supports_get_project_by_id(project_id: &str) -> bool {
+    project_id.len() == 24 && project_id.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
 fn sort_project_profiles(projects: &mut [ProjectProfile]) {
     projects.sort_by(|left, right| {
         match (left.sort_order, right.sort_order) {
@@ -369,6 +373,11 @@ impl DidaProxy {
         let mut projects = Vec::with_capacity(project_ids.len());
 
         for project_id in project_ids {
+            if !supports_get_project_by_id(&project_id) {
+                projects.push(ProjectProfile::from_id(project_id));
+                continue;
+            }
+
             match self
                 .project_profile_by_id_with_fallback(&project_id, incoming_bearer_token)
                 .await
@@ -666,7 +675,7 @@ mod tests {
 
     use super::{
         ProjectProfile, collect_project_ids, format_error_chain, remote_tool_error,
-        sort_project_profiles,
+        sort_project_profiles, supports_get_project_by_id,
     };
     use rmcp::model::CallToolResult;
 
@@ -727,6 +736,14 @@ mod tests {
             remote_tool_error("list_projects", &result),
             "remote tool `list_projects` returned an error result: {\"message\":\"list_projects is temporarily unavailable\"}"
         );
+    }
+
+    #[test]
+    fn supports_get_project_by_id_only_for_object_id_like_values() {
+        assert!(supports_get_project_by_id("0123456789abcdef01234567"));
+        assert!(!supports_get_project_by_id("inbox1026046710"));
+        assert!(!supports_get_project_by_id("project-a"));
+        assert!(!supports_get_project_by_id("0123456789abcdef0123456"));
     }
 
     #[test]

@@ -465,7 +465,15 @@ impl DidaProxy {
 
 #[tool_router]
 impl DidaProxy {
-    #[tool(description = "List all projects of the current user.")]
+    #[tool(
+        description = "List all projects of the current user.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = true
+        )
+    )]
     async fn list_projects(
         &self,
         ctx: RequestContext<RoleServer>,
@@ -495,7 +503,15 @@ impl DidaProxy {
         }
     }
 
-    #[tool(description = "Get project details by project_id.")]
+    #[tool(
+        description = "Get project details by project_id.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = true
+        )
+    )]
     async fn get_project_by_id(
         &self,
         Parameters(args): Parameters<ProjectIdArgs>,
@@ -511,7 +527,15 @@ impl DidaProxy {
         .await
     }
 
-    #[tool(description = "Get project details and undone tasks by project_id.")]
+    #[tool(
+        description = "Get project details and undone tasks by project_id.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = true
+        )
+    )]
     async fn get_project_with_undone_tasks(
         &self,
         Parameters(args): Parameters<ProjectIdArgs>,
@@ -527,7 +551,15 @@ impl DidaProxy {
         .await
     }
 
-    #[tool(description = "Create a task in Dida365 / TickTick.")]
+    #[tool(
+        description = "Create a task in Dida365 / TickTick.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = true
+        )
+    )]
     async fn create_task(
         &self,
         Parameters(args): Parameters<CreateTaskArgs>,
@@ -544,7 +576,15 @@ impl DidaProxy {
         .await
     }
 
-    #[tool(description = "Update an existing task by task_id.")]
+    #[tool(
+        description = "Update an existing task by task_id.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false,
+            open_world_hint = true
+        )
+    )]
     async fn update_task(
         &self,
         Parameters(args): Parameters<UpdateTaskArgs>,
@@ -563,7 +603,15 @@ impl DidaProxy {
         .await
     }
 
-    #[tool(description = "Get full task details by task_id.")]
+    #[tool(
+        description = "Get full task details by task_id.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = true
+        )
+    )]
     async fn get_task_by_id(
         &self,
         Parameters(args): Parameters<TaskIdArgs>,
@@ -579,7 +627,15 @@ impl DidaProxy {
         .await
     }
 
-    #[tool(description = "Search tasks by keyword.")]
+    #[tool(
+        description = "Search tasks by keyword.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = true
+        )
+    )]
     async fn search_task(
         &self,
         Parameters(args): Parameters<SearchTaskArgs>,
@@ -595,7 +651,15 @@ impl DidaProxy {
         .await
     }
 
-    #[tool(description = "List undone tasks within a date range.")]
+    #[tool(
+        description = "List undone tasks within a date range.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = true
+        )
+    )]
     async fn list_undone_tasks_by_date(
         &self,
         Parameters(args): Parameters<ListUndoneTasksByDateArgs>,
@@ -617,7 +681,15 @@ impl DidaProxy {
         .await
     }
 
-    #[tool(description = "Mark a task as completed by project_id and task_id.")]
+    #[tool(
+        description = "Mark a task as completed by project_id and task_id.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false,
+            open_world_hint = true
+        )
+    )]
     async fn complete_task(
         &self,
         Parameters(args): Parameters<CompleteTaskArgs>,
@@ -635,7 +707,13 @@ impl DidaProxy {
     }
 
     #[tool(
-        description = "Get the current time. You can optionally pass an IANA timezone like `Asia/Shanghai` or `America/Los_Angeles`."
+        description = "Get the current time. You can optionally pass an IANA timezone like `Asia/Shanghai` or `America/Los_Angeles`.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn get_current_time(
         &self,
@@ -674,10 +752,27 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        ProjectProfile, collect_project_ids, format_error_chain, remote_tool_error,
+        DidaProxy, ProjectProfile, collect_project_ids, format_error_chain, remote_tool_error,
         sort_project_profiles, supports_get_project_by_id,
     };
-    use rmcp::model::CallToolResult;
+    use rmcp::model::{CallToolResult, Tool};
+
+    fn assert_tool_annotations(
+        tool: Tool,
+        read_only: bool,
+        destructive: bool,
+        idempotent: bool,
+        open_world: bool,
+    ) {
+        let annotations = tool
+            .annotations
+            .expect("tool annotations should be present");
+
+        assert_eq!(annotations.read_only_hint, Some(read_only));
+        assert_eq!(annotations.destructive_hint, Some(destructive));
+        assert_eq!(annotations.idempotent_hint, Some(idempotent));
+        assert_eq!(annotations.open_world_hint, Some(open_world));
+    }
 
     #[test]
     fn format_error_chain_lists_nested_sources() {
@@ -781,6 +876,68 @@ mod tests {
                 "project-b".to_owned(),
                 "project-c".to_owned()
             ]
+        );
+    }
+
+    #[test]
+    fn tool_metadata_annotations_are_complete() {
+        assert_tool_annotations(
+            DidaProxy::list_projects_tool_attr(),
+            true,
+            false,
+            true,
+            true,
+        );
+        assert_tool_annotations(
+            DidaProxy::get_project_by_id_tool_attr(),
+            true,
+            false,
+            true,
+            true,
+        );
+        assert_tool_annotations(
+            DidaProxy::get_project_with_undone_tasks_tool_attr(),
+            true,
+            false,
+            true,
+            true,
+        );
+        assert_tool_annotations(
+            DidaProxy::create_task_tool_attr(),
+            false,
+            false,
+            false,
+            true,
+        );
+        assert_tool_annotations(DidaProxy::update_task_tool_attr(), false, true, false, true);
+        assert_tool_annotations(
+            DidaProxy::get_task_by_id_tool_attr(),
+            true,
+            false,
+            true,
+            true,
+        );
+        assert_tool_annotations(DidaProxy::search_task_tool_attr(), true, false, true, true);
+        assert_tool_annotations(
+            DidaProxy::list_undone_tasks_by_date_tool_attr(),
+            true,
+            false,
+            true,
+            true,
+        );
+        assert_tool_annotations(
+            DidaProxy::complete_task_tool_attr(),
+            false,
+            true,
+            false,
+            true,
+        );
+        assert_tool_annotations(
+            DidaProxy::get_current_time_tool_attr(),
+            true,
+            false,
+            true,
+            false,
         );
     }
 }

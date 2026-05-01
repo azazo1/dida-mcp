@@ -14,6 +14,7 @@
 - 基于 [modelcontextprotocol/rust-sdk](https://github.com/modelcontextprotocol/rust-sdk) 的 `rmcp` 实现本地 HTTP MCP 服务.
 - 使用 `Authorization: Bearer <token>` 调用远端 Dida MCP 服务.
 - 只保留高频任务相关工具, 便于模型使用和维护.
+- 当远端 `list_projects` 失败时, 会自动尝试用其他只读工具回收 `project_id` 作为后备结果.
 - 支持通过 `config.toml` 配置本地监听地址, MCP 路径, 远端地址和认证信息.
 - 支持可选的本地入站 Bearer 校验.
 
@@ -37,6 +38,30 @@
 - `list_undone_tasks_by_date`
 - `complete_task`
 - `get_current_time`
+
+## `list_projects` 失败时的后备行为
+
+正常情况下, 本地的 `list_projects` 会直接转发到远端 Dida MCP.
+
+如果远端 `list_projects` 调用失败, 或者远端明确返回 tool error, 本地会自动进入后备流程:
+
+1. 先从一些只读任务工具的返回结果里递归提取 `projectId` / `project_id`.
+2. 再对这些 `project_id` 逐个调用 `get_project_by_id`, 尽量补全项目名称、颜色、排序等信息.
+3. 如果某个项目详情补全失败, 仍然会返回一个至少包含 `id` 的最小项目对象, 这样调用方还能继续使用这个 `project_id`.
+
+当前后备探测会优先尝试这些远端工具:
+
+- `list_undone_tasks_by_date`
+- `list_undone_tasks_by_time_query`
+- `list_completed_tasks_by_date`
+- `filter_tasks`
+
+这个后备逻辑的目标是“尽量恢复可用的 `project_id` 集合”, 不是严格等价于远端原生 `list_projects`.
+
+它的已知边界是:
+
+- 如果某个项目在这些任务相关接口里完全没有出现过, 就可能不会被回收到.
+- 尤其是空项目, 或者长时间没有未完成/已完成任务痕迹的项目, 可能不会出现在后备结果中.
 
 ## 简化思路
 

@@ -17,6 +17,7 @@ use rmcp::{
 };
 use serde::de::DeserializeOwned;
 use serde_json::Value;
+use tokio::task::JoinSet;
 use tracing::{error, warn};
 
 use crate::{
@@ -210,43 +211,90 @@ impl DidaProxy {
         &self,
         incoming_bearer_token: Option<&str>,
     ) -> Result<Vec<String>, String> {
+        let now = Utc::now();
+        let undone_start = (now - Duration::days(7)).to_rfc3339();
+        let undone_end = (now + Duration::days(7)).to_rfc3339();
+        let completed_start = (now - Duration::days(90)).to_rfc3339();
+        let completed_end = now.to_rfc3339();
+
         let probes = vec![
             (
                 "list_undone_tasks_by_date",
                 map_to_object(serde_json::json!({
-                    // "search": {
-                    //     "startDate": undone_start,
-                    //     "endDate": undone_end,
-                    // }
+                    "search": {
+                        "startDate": undone_start,
+                        "endDate": undone_end,
+                    }
+                }))?,
+            ),
+            (
+                "list_undone_tasks_by_time_query",
+                map_to_object(serde_json::json!({
+                    "query_command": "today",
+                }))?,
+            ),
+            (
+                "list_undone_tasks_by_time_query",
+                map_to_object(serde_json::json!({
+                    "query_command": "last7day",
+                }))?,
+            ),
+            (
+                "list_undone_tasks_by_time_query",
+                map_to_object(serde_json::json!({
+                    "query_command": "next7day",
                 }))?,
             ),
             (
                 "list_completed_tasks_by_date",
                 map_to_object(serde_json::json!({
-                    // "search": {
-                    //     "startDate": completed_start,
-                    //     "endDate": completed_end,
-                    // }
+                    "search": {
+                        "startDate": completed_start,
+                        "endDate": completed_end,
+                    }
                 }))?,
             ),
         ];
 
         let mut project_ids = BTreeSet::new();
         let mut probe_errors = Vec::new();
+        let incoming_bearer_token = incoming_bearer_token.map(str::to_owned);
+        let mut probe_tasks = JoinSet::new();
 
         for (tool_name, arguments) in probes {
-            match self
-                .call_remote_tool_typed::<Value>(tool_name, arguments, incoming_bearer_token)
-                .await
-            {
-                Ok(value) => collect_project_ids(&value, &mut project_ids),
-                Err(err) => {
+            let proxy = self.clone();
+            let incoming_bearer_token = incoming_bearer_token.clone();
+
+            probe_tasks.spawn(async move {
+                let result = proxy
+                    .call_remote_tool_typed::<Value>(
+                        tool_name,
+                        arguments,
+                        incoming_bearer_token.as_deref(),
+                    )
+                    .await;
+                (tool_name, result)
+            });
+        }
+
+        while let Some(joined) = probe_tasks.join_next().await {
+            match joined {
+                Ok((_tool_name, Ok(value))) => collect_project_ids(&value, &mut project_ids),
+                Ok((tool_name, Err(err))) => {
                     warn!(
                         tool_name = %tool_name,
                         error = %err,
                         "fallback project id discovery probe failed",
                     );
                     probe_errors.push(format!("{tool_name}: {err}"));
+                }
+                Err(err) => {
+                    warn!(
+                        error = %err,
+                        error_debug = ?err,
+                        "fallback project id discovery probe task failed to join",
+                    );
+                    probe_errors.push(format!("probe task join error: {err}"));
                 }
             }
         }
@@ -256,9 +304,9 @@ impl DidaProxy {
                 .call_remote_tool_typed::<Value>(
                     "filter_tasks",
                     map_to_object(serde_json::json!({
-                        "filter": {},
+                    "filter": {},
                     }))?,
-                    incoming_bearer_token,
+                    incoming_bearer_token.as_deref(),
                 )
                 .await
             {

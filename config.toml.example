@@ -1,0 +1,15 @@
+[server]
+listen = "127.0.0.1:8787"
+base_path = "/mcp"
+stateful_mode = true
+disable_host_validation = true
+sse_keep_alive_secs = 15
+inbound_bearer_token = ""
+
+[remote]
+url = "https://mcp.dida365.com"
+bearer_token = ""
+
+[tools]
+enable_get_current_time = true
+default_timezone = "Asia/Shanghai"

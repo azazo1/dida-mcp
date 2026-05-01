@@ -17,6 +17,14 @@
 - 支持通过 `config.toml` 配置本地监听地址, MCP 路径, 远端地址和认证信息.
 - 支持可选的本地入站 Bearer 校验.
 
+## 远端版本
+
+当前 `README` 记录的远端 Dida / TickTick MCP 版本信息是:
+
+```text
+1.26.0 TickTick MCP Server
+```
+
 ## 当前提供的工具
 
 - `list_projects`
@@ -29,6 +37,45 @@
 - `list_undone_tasks_by_date`
 - `complete_task`
 - `get_current_time`
+
+## 简化思路
+
+这版服务的简化不是“随便删一些工具”, 而是围绕“创建任务和相关内容”做收缩.
+
+原始 `assets/tools.json` 里有 32 个工具. 这版只保留任务主链路和少量必要辅助能力:
+
+- 任务写入主链路: `create_task`, `update_task`, `complete_task`
+- 任务读取辅助: `get_task_by_id`, `search_task`, `list_undone_tasks_by_date`
+- 项目上下文: `list_projects`, `get_project_by_id`, `get_project_with_undone_tasks`
+- 本地补充工具: `get_current_time`
+
+具体简化体现在下面几个方面:
+
+1. 工具范围简化
+
+- 去掉 habits, focus, fetch, search, batch, move, completed, filter, project 写操作等非核心能力.
+- 不追求做成“远端 TickTick MCP 的完整镜像”, 而是保留最常被模型调用的任务工具集合.
+
+2. 参数结构简化
+
+- `create_task` 和 `update_task` 不要求调用方手动构造完整嵌套 `task` 对象.
+- 本地接口改成更容易调用的扁平参数, 再由中转服务映射为远端所需结构.
+
+3. 责任边界简化
+
+- 本地服务主要负责 3 件事: 接入 HTTP MCP, 处理 Bearer 策略, 转发远端工具调用.
+- 不在本地重做 TickTick 的完整业务层, 尽量避免本地状态和远端状态分叉.
+
+4. 配置面简化
+
+- 所有关键行为集中在一个 `config.toml`.
+- 只保留监听地址, MCP 路径, stateful 开关, 本地入站 Bearer, 远端 Bearer 模式, 远端地址, 默认时区这些核心配置.
+
+这样做的目标是:
+
+- 让模型更容易选中正确工具.
+- 让人类更容易理解和维护.
+- 把复杂度放在“认证和转发策略”上, 而不是放在“本地复刻整套 TickTick 能力”上.
 
 ## 快速上手
 

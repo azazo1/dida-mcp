@@ -79,6 +79,7 @@ pub(crate) struct ChecklistItemInput {
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub(crate) struct CreateTaskArgs {
+    #[schemars(description = "null for 收集箱/默认")]
     pub(crate) project_id: Option<String>,
     pub(crate) title: String,
     pub(crate) content: Option<String>,

@@ -374,7 +374,7 @@ impl DidaProxy {
 
         for project_id in project_ids {
             if !supports_get_project_by_id(&project_id) {
-                projects.push(ProjectProfile::from_id(project_id));
+                // projects.push(ProjectProfile::from_id(project_id));
                 continue;
             }
 
@@ -747,9 +747,14 @@ impl ServerHandler for DidaProxy {}
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
+    use std::{collections::BTreeSet, env, ops::Deref, sync::Arc};
 
-    use serde_json::json;
+    use serde_json::{Value, json};
+
+    use crate::{
+        config::{AppConfig, RemoteBearerMode, RemoteConfig, ServerConfig, ToolConfig},
+        proxy::types::map_to_object,
+    };
 
     use super::{
         DidaProxy, ProjectProfile, collect_project_ids, format_error_chain, remote_tool_error,
@@ -939,5 +944,48 @@ mod tests {
             true,
             false,
         );
+    }
+
+    #[tokio::test]
+    async fn proxy_filter_tasks() {
+        let proxy = DidaProxy::new(Arc::new(AppConfig {
+            server: Default::default(),
+            remote: RemoteConfig {
+                url: "https://mcp.dida365.com".into(),
+                bearer_mode: RemoteBearerMode::Fixed,
+                incoming_bearer_header: "".into(),
+                bearer_token: env::var("DIDA_TOKEN").unwrap(),
+            },
+            tools: ToolConfig {
+                enable_get_current_time: true,
+                default_timezone: None,
+            },
+        }));
+        let result = proxy
+            .call_remote_tool_typed::<Value>(
+                "filter_tasks",
+                map_to_object(serde_json::json!({
+                "filter": {},
+                }))
+                .unwrap(),
+                None,
+            )
+            .await
+            .unwrap();
+        let tasks = result
+            .as_object()
+            .unwrap()
+            .get("result")
+            .unwrap()
+            .as_array()
+            .unwrap();
+        dbg!(tasks);
+        let mut project_ids: Vec<_> = tasks
+            .iter()
+            .filter_map(|t| t.get("projectId")?.as_str())
+            .collect();
+        project_ids.sort();
+        project_ids.dedup();
+        dbg!(project_ids);
     }
 }

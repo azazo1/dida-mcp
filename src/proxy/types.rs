@@ -51,7 +51,7 @@ pub(crate) struct ChecklistItemInput {
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub(crate) struct CreateTaskArgs {
-    pub(crate) project_id: String,
+    pub(crate) project_id: Option<String>,
     pub(crate) title: String,
     pub(crate) content: Option<String>,
     pub(crate) desc: Option<String>,
@@ -134,7 +134,7 @@ pub(crate) struct RemoteTaskPayload {
 impl RemoteTaskPayload {
     pub(crate) fn from_create(args: CreateTaskArgs) -> Self {
         Self {
-            project_id: Some(args.project_id),
+            project_id: args.project_id,
             title: Some(args.title),
             content: args.content,
             desc: args.desc,

@@ -1,6 +1,34 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProjectProfile {
+    pub(crate) id: Option<String>,
+    pub(crate) name: Option<String>,
+    pub(crate) color: Option<String>,
+    pub(crate) sort_order: Option<i64>,
+    pub(crate) closed: Option<bool>,
+    pub(crate) group_id: Option<String>,
+    pub(crate) view_mode: Option<String>,
+    pub(crate) permission: Option<String>,
+    pub(crate) kind: Option<String>,
+}
+
+impl ProjectProfile {
+    pub(crate) fn from_id(project_id: impl Into<String>) -> Self {
+        Self {
+            id: Some(project_id.into()),
+            ..Self::default()
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub(crate) struct ProjectListResult {
+    pub(crate) result: Vec<ProjectProfile>,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub(crate) struct ProjectIdArgs {
     pub(crate) project_id: String,
